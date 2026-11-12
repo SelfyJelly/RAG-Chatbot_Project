@@ -1,11 +1,13 @@
-# Environment variables (contains secrets)
+# API-Keys
 .env
+.env.*
+!.env.example
 
-# Python virtual environment
+# Python
+.venv/
 venv/
-
-# Python cache
 __pycache__/
+*.pyc
 
-# Model cache (downloaded at runtime)
+# Cache
 .cache/
