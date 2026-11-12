@@ -1,0 +1,11 @@
+# Environment variables (contains secrets)
+.env
+
+# Python virtual environment
+venv/
+
+# Python cache
+__pycache__/
+
+# Model cache (downloaded at runtime)
+.cache/
