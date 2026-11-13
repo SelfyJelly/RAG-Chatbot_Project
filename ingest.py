@@ -1,75 +1,120 @@
 import os
+from pathlib import Path
+
+import pymupdf
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from supabase import create_client
 
 load_dotenv()
 
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# Verbindung zur Datenbank
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
 
-# Sample content representing website pages
-CONTENT = [
-    {
-        "content": "The AWS Cloud Club is a student-led community focused on cloud computing, AI/ML, and software development. We host workshops, hackathons, and study groups throughout the academic year.",
-        "metadata": {"source": "landing_page", "section": "About Us"}
-    },
-    {
-        "content": "To apply for membership, visit our Apply Now page and fill out the application form. Applications are open at the start of each semester. You need to be a currently enrolled student.",
-        "metadata": {"source": "apply_now", "section": "How to Apply"}
-    },
-    {
-        "content": "Our Cloud Engineering department builds and maintains cloud infrastructure projects. The AI/ML department focuses on machine learning research and applications. The Web Development department handles our online presence.",
-        "metadata": {"source": "core_team", "section": "Departments"}
-    },
-    {
-        "content": "Cloud 101 Workshop is our beginner-friendly introduction to AWS services. It covers EC2, S3, and Lambda basics. The next session is scheduled for the first week of each month.",
-        "metadata": {"source": "events", "section": "Cloud 101"}
-    },
-    {
-        "content": "The AI Study Group meets every Wednesday at 6 PM in the Computer Science building, Room 204. We cover topics from basic neural networks to advanced LLM applications.",
-        "metadata": {"source": "events", "section": "AI Study Group"}
-    },
-    {
-        "content": "Open positions include Cloud Engineering Lead, AI/ML Research Assistant, and Web Developer. All positions require a minimum commitment of 5 hours per week.",
-        "metadata": {"source": "apply_now", "section": "Open Positions"}
-    },
-    {
-        "content": "Our FAQ: Membership is free for all enrolled students. You do not need prior cloud experience to join. We provide all learning resources and AWS credits for projects.",
-        "metadata": {"source": "faq", "section": "General FAQ"}
-    },
-]
+# Muss mit dem Modell in main.py übereinstimmen!
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+model = SentenceTransformer(MODEL_NAME)
 
-def chunk_content(text, chunk_size=500, overlap=50):
-    """Split text into overlapping chunks."""
+# Ordner mit den Vorlesungsfolien
+PDF_FOLDER = Path(__file__).resolve().parent / "documents"
+
+def read_pdf(pdf_path):
+    """Liest alle Seiten einer PDF-Datei aus."""
+
+    pages = []
+
+    with pymupdf.open(pdf_path) as pdf:
+        for page_number, page in enumerate(pdf, start=1):
+
+            text = page.get_text("text").strip()
+
+            if not text:
+                print(f"  Seite {page_number}: Kein Text gefunden")
+                continue
+
+            pages.append({
+                "content": text,
+                "metadata": {
+                    "source": pdf_path.name,
+                    "page": page_number
+                }
+            })
+
+    return pages
+
+
+def chunk_content(text, chunk_size=1000, overlap=150):
+    """Teilt lange Texte in kleinere Abschnitte."""
+
+    if overlap >= chunk_size:
+        raise ValueError("overlap muss kleiner als chunk_size sein")
+
     chunks = []
     start = 0
+
     while start < len(text):
-        end = start + chunk_size
+        end = min(start + chunk_size, len(text))
         chunks.append(text[start:end])
+
+        if end == len(text):
+            break
+
         start = end - overlap
+
     return chunks
 
+
 def ingest():
-    """Embed and upsert all content into Supabase."""
-    print("Starting ingestion...")
+    """Liest PDFs ein und speichert Embeddings in Supabase."""
 
-    for i, item in enumerate(CONTENT):
-        chunks = chunk_content(item["content"])
+    if not PDF_FOLDER.exists():
+        print("PDF-Ordner nicht gefunden!")
+        return
 
-        for j, chunk in enumerate(chunks):
-            embedding = model.encode(chunk).tolist()
+    pdf_files = sorted(PDF_FOLDER.glob("*.pdf"))
 
-            record = {
-                "content": chunk,
-                "metadata": item["metadata"],
-                "embedding": embedding,
-            }
+    if not pdf_files:
+        print("Keine PDF-Dateien gefunden!")
+        return
 
-            supabase.table("documents").upsert(record).execute()
-            print(f"  Ingested chunk {j+1} from {item['metadata']['source']}/{item['metadata']['section']}")
+    print(f"{len(pdf_files)} PDF-Dateien gefunden.")
 
-    print(f"\nIngestion complete! {len(CONTENT)} documents processed.")
+    for pdf_path in pdf_files:
+        print(f"\nVerarbeite: {pdf_path.name}")
+
+        pages = read_pdf(pdf_path)
+
+        for page in pages:
+            chunks = chunk_content(page["content"])
+
+            for chunk_number, chunk in enumerate(chunks, start=1):
+
+                # Text in Vektor umwandeln
+                embedding = model.encode(chunk).tolist()
+
+                metadata = {
+                    **page["metadata"],
+                    "chunk": chunk_number
+                }
+
+                # In Supabase speichern
+                record = {
+                    "content": chunk,
+                    "metadata": metadata,
+                    "embedding": embedding
+                }
+
+                supabase.table("documents").insert(record).execute()
+
+            print(
+                f"  Seite {page['metadata']['page']}: "
+                f"{len(chunks)} Chunks gespeichert"
+            )
+
+    print("\nAlle PDFs wurden verarbeitet!")
 
 
 if __name__ == "__main__":
